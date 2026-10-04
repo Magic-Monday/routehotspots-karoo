@@ -11,7 +11,11 @@ import java.net.URL
  *
  * Endpoint (publiek, geen auth — zie routes/routehotspots.py:api_poi_query):
  *   POST https://app.routehotspots.com/api/poi/query
- *   body: { coords: [[lon,lat],...], categories: ["coffee","lunch",...], buffer_m: 3000 }
+ *   body: { coords: [[lon,lat],...], categories: ["coffee","lunch",...], buffer_m: 3000,
+ *           spread_m: 1000 }
+ * `spread_m` is géén no-op als je 'm weglaat — de backend spreidt pas als je 'm expliciet
+ * meestuurt (default 0 = alle ruwe Overpass-resultaten, kan voor een lange route in de
+ * honderden lopen; zie README "Live-test — bevindingen").
  *
  * De backend zoekt via Overpass POI's binnen een buffer rond de route (auto-expand
  * 3→5→10→25 km) en groepeert ze per categorie. Dit is de "injectie"-bron: geef de
@@ -39,6 +43,7 @@ object RouteHotspotsApi {
         val coords: List<List<Double>>,
         val categories: List<String>,
         val buffer_m: Int,
+        val spread_m: Int,
     )
 
     // De backend geeft POI's gegroepeerd per categorie terug. We houden het ruim
@@ -58,10 +63,11 @@ object RouteHotspotsApi {
         routeCoords: List<List<Double>>,
         categories: List<String>,
         bufferMeters: Int = 3000,
+        spreadMeters: Int = 1000,
     ): List<Hotspot> {
         val payload = json.encodeToString(
             QueryBody.serializer(),
-            QueryBody(routeCoords, categories, bufferMeters),
+            QueryBody(routeCoords, categories, bufferMeters, spreadMeters),
         )
         val conn = (URL("$BASE/api/poi/query").openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"

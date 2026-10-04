@@ -89,18 +89,49 @@ Bevestigd, geen bug maar goed om te weten:
   kan dit alsnog timen out. Kandidaten voor een vervolgstap: timeout verhogen, categorieën
   parallelliseren server-side, of client-side minder categorieën tegelijk opvragen.
 - **218 hotspots op één route is visueel veel** — bij lage zoom clusteren de POI-iconen tot
-  onleesbare "bubbels" op de kaart. Spreiden/filteren (F3 in het plan) is nodig voor een
-  prettige kaart, niet alleen "nice to have".
+  onleesbare "bubbels" op de kaart. Bevestigd op de Hammerhead-webdashboard-kaart van
+  dezelfde route (`dashboard.hammerhead.io`) dat de hotspots wél écht over de volle 74,6km
+  verspreid liggen — geen plaatsingsbug, puur te dicht op elkaar.
 - **Een crashende, andere Karoo-extensie herlaadde het kaartscherm** tijdens het testen,
   wat onze lopende aanvraag afbrak (de coroutine-scope wordt gecancelled bij `startMap`-
   unbind). Geen bug in RouteHotspots, maar een reminder dat de kaartlaag op een drukke Karoo
   vaker kan herladen dan je zou denken.
 
+Derde fix, ná het eerste succesvolle resultaat:
+- **`spread_m` ontbrak in de request-body.** De backend heeft spreiding (`_spread_pois`,
+  minimale afstand tussen POI's van dezelfde categorie langs de route) al ingebouwd, maar
+  past 'm alléén toe als de client 'm expliciet meestuurt — default is 0 (uit). Dat
+  verklaarde de 218. Toegevoegd aan `RouteHotspotsApi.hotspotsAlongRoute()` met een default
+  van 1000m. **Nog niet live herbevestigd** (zie onder) — wel unit-getest en code-identiek
+  aan het al-bewezen request-pad (één extra JSON-veld).
+- **Bug: een mislukte poging blokkeerde retries.** `lastRouteKey` werd gezet vóórdat de
+  netwerkcall werd geprobeerd, dus een wifi-hapering "verbruikte" de poging voorgoed voor
+  die route-instantie — pas een echte state-wisseling (route uit/aan) gaf een nieuwe kans.
+  Gefixt: `lastRouteKey` wordt nu pas gezet ná een geslaagde call. **Bewezen werkend** tijdens
+  het live-testen: de Karoo emit kennelijk periodiek een vers `NavigatingRoute`-event (ook
+  zonder dat de route zelf wijzigt), waardoor de extensie na deze fix vanzelf om de ~5
+  seconden opnieuw probeert tot het lukt — relevant voor een echte rit met wisselende dekking.
+
 ## Nog open
+- **`spread_m=1000` niet live herbevestigd** — de wifi van de Karoo werd tijdens het
+  hertesten onstabiel op **twee verschillende netwerken** (eerst het eigen wifi-netwerk,
+  daarna een telefoon-hotspot — beide met sterk signaal, beide met tussentijds afgebroken
+  verbindingen: `UnknownHostException` resp. `SocketException: Socket closed` midden in de
+  download). Dat wijst eerder op de wifi-radio van de Karoo zelf dan op een netwerkprobleem.
+  Eerstvolgende gelegenheid: route activeren en in `app/data/...` of via logcat checken of
+  het aantal hotspots nu rond de tientallen zit i.p.v. 218.
+- **Fietscomputer-aanname**: een Karoo gaat er mogelijk vanuit dat er tijdens het fietsen
+  geen wifi is (radio bewust zuinig/instabiel gehouden) — zie de risico-sectie van
+  `docs/PLAN-routehotspots-karoo-extension.md`. Als dat klopt, is "live ophalen tijdens de rit" misschien de verkeerde
+  aanname en moet het "vooraf ophalen zodra er wifi is, lokaal cachen" worden (thuis
+  synchroniseren, net als kaarten/firmware nu al werkt).
 - **POI-limiet van de kaartlaag** — onbekend of 218 symbolen tegelijk ook daadwerkelijk een
   praktisch/prestatie-probleem is, los van de visuele clutter.
 - **`NavigatingRoute` vs. `NavigatingToDestination`** — de extensie injecteert alleen op een
   vooraf geladen route, niet op ad-hoc "navigeer naar X". Nog niet apart getest.
+- **Backend-aanroep duurt ~55 seconden** (5 categorieën × aparte Overpass-call, elk tot 45s)
+  — griezelig dicht bij onze 60s client-timeout. Kandidaten: timeout verhogen, categorieën
+  parallelliseren server-side, of client-side minder categorieën tegelijk opvragen.
 
 ## Backend-referentie
 `integration_dashboard` → `app/routes/routehotspots.py` (`api_poi_query`, `POI_CATEGORIES`

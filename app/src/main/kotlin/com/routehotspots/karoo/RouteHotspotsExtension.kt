@@ -91,12 +91,11 @@ class RouteHotspotsExtension : KarooExtension("routehotspots", "1") {
             Log.i(TAG, "zelfde route als vorige keer ($key) — niet opnieuw queryen")
             return
         }
-        lastRouteKey = key
 
         // Backend verwacht [lon, lat]-paren; de polyline-decoder geeft [lat, lon].
         val lonLatCoords = routeCoords.map { listOf(it[1], it[0]) }
         Log.i(TAG, "POST /api/poi/query — eerste coord=${lonLatCoords.first()} laatste=${lonLatCoords.last()}")
-        val hotspots = runCatching {
+        val result = runCatching {
             RouteHotspotsApi.hotspotsAlongRoute(
                 routeCoords = lonLatCoords,
                 categories = RouteHotspotsApi.DEFAULT_CATEGORIES,
@@ -105,10 +104,18 @@ class RouteHotspotsExtension : KarooExtension("routehotspots", "1") {
         }.onFailure {
             Log.e(TAG, "hotspotsAlongRoute faalde: ${it.javaClass.name}: ${it.message}")
             Log.e(TAG, "hotspotsAlongRoute faalde (met stacktrace)", it)
-        }.getOrElse {
-            // Fail-soft: geen hotspots i.p.v. een crash tijdens het fietsen.
-            emptyList()
         }
+
+        // Alleen bij een geslaagde call (ongeacht of er hotspots in zaten) onthouden we
+        // de route als "afgehandeld" — bij een mislukte poging (wifi-hapering, timeout)
+        // blijft lastRouteKey ongewijzigd, zodat een volgende state-wisseling voor
+        // DEZELFDE route alsnog een nieuwe poging waagt i.p.v. stil overgeslagen te worden.
+        val hotspots = result.getOrNull()
+        if (hotspots == null) {
+            Log.i(TAG, "geen retry-blokkade gezet — volgende poging voor deze route mag opnieuw")
+            return
+        }
+        lastRouteKey = key
         Log.i(TAG, "${hotspots.size} hotspots ontvangen")
 
         injectHotspots(hotspots, emitter)
