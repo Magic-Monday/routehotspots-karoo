@@ -1,5 +1,6 @@
 package com.routehotspots.karoo
 
+import android.util.Log
 import io.hammerhead.karooext.KarooSystemService
 import io.hammerhead.karooext.extension.KarooExtension
 import io.hammerhead.karooext.internal.Emitter
@@ -41,18 +42,24 @@ class RouteHotspotsExtension : KarooExtension("routehotspots", "1") {
 
     override fun onCreate() {
         super.onCreate()
-        karooSystem.connect()
+        Log.i(TAG, "onCreate — verbinden met Karoo System")
+        karooSystem.connect { connected -> Log.i(TAG, "karooSystem.connect: connected=$connected") }
     }
 
     override fun startMap(emitter: Emitter<MapEffect>) {
+        Log.i(TAG, "startMap aangeroepen — Karoo System heeft de kaartlaag gebonden")
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val job: Job = scope.launch {
             karooSystem.consumerFlow<OnNavigationState>()
                 .map { it.state }
                 .distinctUntilChanged()
-                .collect { state -> handleNavigationState(state, emitter) }
+                .collect { state ->
+                    Log.i(TAG, "OnNavigationState: ${state::class.simpleName}")
+                    handleNavigationState(state, emitter)
+                }
         }
         emitter.setCancellable {
+            Log.i(TAG, "startMap gestopt (kaartlaag losgekoppeld)")
             job.cancel()
             lastRouteKey = null
             lastSymbolIds = emptyList()
@@ -71,28 +78,37 @@ class RouteHotspotsExtension : KarooExtension("routehotspots", "1") {
             return
         }
 
+        Log.i(TAG, "NavigatingRoute: name=${route.name} polyline-lengte=${route.routePolyline.length}")
         val routeCoords = GooglePolyline.decode(route.routePolyline)
+        Log.i(TAG, "polyline gedecodeerd naar ${routeCoords.size} coords")
         if (routeCoords.size < 2) {
             clearHotspots(emitter)
             return
         }
 
         val key = "${route.name}:${routeCoords.size}"
-        if (key == lastRouteKey) return
+        if (key == lastRouteKey) {
+            Log.i(TAG, "zelfde route als vorige keer ($key) — niet opnieuw queryen")
+            return
+        }
         lastRouteKey = key
 
         // Backend verwacht [lon, lat]-paren; de polyline-decoder geeft [lat, lon].
         val lonLatCoords = routeCoords.map { listOf(it[1], it[0]) }
+        Log.i(TAG, "POST /api/poi/query — eerste coord=${lonLatCoords.first()} laatste=${lonLatCoords.last()}")
         val hotspots = runCatching {
             RouteHotspotsApi.hotspotsAlongRoute(
                 routeCoords = lonLatCoords,
                 categories = RouteHotspotsApi.DEFAULT_CATEGORIES,
                 bufferMeters = 3000,
             )
+        }.onFailure {
+            Log.e(TAG, "hotspotsAlongRoute faalde", it)
         }.getOrElse {
             // Fail-soft: geen hotspots i.p.v. een crash tijdens het fietsen.
             emptyList()
         }
+        Log.i(TAG, "${hotspots.size} hotspots ontvangen")
 
         injectHotspots(hotspots, emitter)
     }
@@ -112,6 +128,7 @@ class RouteHotspotsExtension : KarooExtension("routehotspots", "1") {
         }
         lastSymbolIds = symbols.map { it.id }
         if (symbols.isNotEmpty()) {
+            Log.i(TAG, "ShowSymbols: ${symbols.size} POI's getekend")
             emitter.onNext(ShowSymbols(symbols))
         }
     }
@@ -130,6 +147,8 @@ class RouteHotspotsExtension : KarooExtension("routehotspots", "1") {
     }
 
     companion object {
+        private const val TAG = "RouteHotspots"
+
         /** Backend-categorie (zie `POI_CATEGORIES` in routehotspots.py) → Karoo POI-icoontype. */
         internal fun categoryToPoiType(category: String?): String = when (category) {
             "coffee" -> Symbol.POI.Types.COFFEE
