@@ -2,17 +2,18 @@ package com.routehotspots.karoo
 
 import io.hammerhead.karooext.KarooSystemService
 import io.hammerhead.karooext.extension.KarooExtension
-// TODO(F1): bevestig de exacte model-klassen tegen de docs:
-//   https://hammerheadnav.github.io/karoo-ext/karoo-ext/io.hammerhead.karooext.models/
-//   - Navigatie-event met de actieve route (naam, polyline, POI's) — vermoedelijk
-//     `OnNavigationState` (consume via karooSystem.addConsumer { ... }).
-//   - Map-effect om iconen/symbolen op coördinaten te tekenen in een eigen kaartlaag —
-//     dispatch via karooSystem.dispatch(...). (Zie "show map items: polylines, icons at
-//     locations" in de SDK.)
+import io.hammerhead.karooext.internal.Emitter
+import io.hammerhead.karooext.models.HideSymbols
+import io.hammerhead.karooext.models.MapEffect
+import io.hammerhead.karooext.models.OnNavigationState
+import io.hammerhead.karooext.models.ShowSymbols
+import io.hammerhead.karooext.models.Symbol
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /**
@@ -21,81 +22,122 @@ import kotlinx.coroutines.launch
  * langs die route als POI-markers op de kaart. Geen route vooraf bouwen.
  *
  * Flow:
- *   1. Verbind met KarooSystemService.
- *   2. Consumeer het navigatie-event → lees de polyline van de ACTIEVE route.
- *   3. POST die coords naar RouteHotspotsApi (/api/poi/query) → hotspots.
- *   4. Dispatch map-effects → teken de hotspots als iconen op de kaart.
- *
- * Dit bestand is het skelet: de karoo-ext-specifieke klassen (nav-event + map-effect)
- * moeten in Android Studio tegen de live SDK worden bevestigd — zie de TODO's. De
- * netwerk-/datalaag (RouteHotspotsApi) is compleet en los testbaar.
+ *   1. Karoo System bindt de kaartlaag → [startMap] wordt aangeroepen (vereist
+ *      `mapLayer="true"` in extension_info.xml).
+ *   2. Consumeer [OnNavigationState] → bij een actieve, geladen route
+ *      (`NavigatingRoute`) decodeer de `routePolyline` (Google-encoded, precisie 1e5).
+ *   3. POST die coords naar [RouteHotspotsApi] (`/api/poi/query`) → hotspots.
+ *   4. `emitter.onNext(ShowSymbols(...))` → teken de hotspots als POI-iconen; wis de
+ *      vorige markers eerst (`HideSymbols`) zodra de route wisselt of wegvalt.
  */
 class RouteHotspotsExtension : KarooExtension("routehotspots", "1") {
 
     private val karooSystem by lazy { KarooSystemService(applicationContext) }
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    // Onthoud de laatst-geïnjecteerde route zodat we niet elke tick opnieuw queryen.
+    // Onthoud de laatst-geïnjecteerde route (+ diens symbol-ID's) zodat we niet
+    // elke identieke tick opnieuw queryen, en de vorige markers kunnen wissen.
     private var lastRouteKey: String? = null
+    private var lastSymbolIds: List<String> = emptyList()
 
     override fun onCreate() {
         super.onCreate()
-        karooSystem.connect { connected ->
-            if (connected) subscribeToActiveRoute()
+        karooSystem.connect()
+    }
+
+    override fun startMap(emitter: Emitter<MapEffect>) {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val job: Job = scope.launch {
+            karooSystem.consumerFlow<OnNavigationState>()
+                .map { it.state }
+                .distinctUntilChanged()
+                .collect { state -> handleNavigationState(state, emitter) }
+        }
+        emitter.setCancellable {
+            job.cancel()
+            lastRouteKey = null
+            lastSymbolIds = emptyList()
         }
     }
 
-    private fun subscribeToActiveRoute() {
-        // TODO(F1): vervang `navConsumer` door de echte consumer-signatuur van het
-        //   navigatie-event (bv. addConsumer { state: OnNavigationState -> ... }).
-        //   Haal uit `state` de route-naam + polyline (lijst van lat/lon-punten).
-        //
-        // Pseudostructuur:
-        // karooSystem.addConsumer { state: OnNavigationState ->
-        //     val route = state.route ?: return@addConsumer clearHotspots()
-        //     val coords = route.polyline.map { listOf(it.lng, it.lat) } // [lon,lat]!
-        //     val key = route.name + ":" + coords.size
-        //     if (key == lastRouteKey) return@addConsumer
-        //     lastRouteKey = key
-        //     injectHotspots(coords)
-        // }
+    private suspend fun handleNavigationState(
+        state: OnNavigationState.NavigationState,
+        emitter: Emitter<MapEffect>,
+    ) {
+        // Alleen een vooraf geladen/geactiveerde route (NavigatingRoute) telt als
+        // "injectie-bron" — zie plan: géén ad-hoc "navigeer naar X" (NavigatingToDestination).
+        val route = state as? OnNavigationState.NavigationState.NavigatingRoute
+        if (route == null) {
+            clearHotspots(emitter)
+            return
+        }
+
+        val routeCoords = GooglePolyline.decode(route.routePolyline)
+        if (routeCoords.size < 2) {
+            clearHotspots(emitter)
+            return
+        }
+
+        val key = "${route.name}:${routeCoords.size}"
+        if (key == lastRouteKey) return
+        lastRouteKey = key
+
+        // Backend verwacht [lon, lat]-paren; de polyline-decoder geeft [lat, lon].
+        val lonLatCoords = routeCoords.map { listOf(it[1], it[0]) }
+        val hotspots = runCatching {
+            RouteHotspotsApi.hotspotsAlongRoute(
+                routeCoords = lonLatCoords,
+                categories = RouteHotspotsApi.DEFAULT_CATEGORIES,
+                bufferMeters = 3000,
+            )
+        }.getOrElse {
+            // Fail-soft: geen hotspots i.p.v. een crash tijdens het fietsen.
+            emptyList()
+        }
+
+        injectHotspots(hotspots, emitter)
     }
 
-    /** Haal hotspots langs de route op (achtergrond) en teken ze op de kaart. */
-    private fun injectHotspots(routeCoords: List<List<Double>>) {
-        scope.launch {
-            val hotspots = runCatching {
-                RouteHotspotsApi.hotspotsAlongRoute(
-                    routeCoords = routeCoords,
-                    categories = RouteHotspotsApi.DEFAULT_CATEGORIES,
-                    bufferMeters = 3000,
-                )
-            }.getOrElse {
-                // Fail-soft: geen hotspots i.p.v. een crash tijdens het fietsen.
-                emptyList()
-            }
-            showHotspotsOnMap(hotspots)
+    private fun injectHotspots(hotspots: List<RouteHotspotsApi.Hotspot>, emitter: Emitter<MapEffect>) {
+        if (lastSymbolIds.isNotEmpty()) {
+            emitter.onNext(HideSymbols(lastSymbolIds))
+        }
+        val symbols = hotspots.map { h ->
+            Symbol.POI(
+                id = h.id ?: "${h.lat},${h.lon}",
+                lat = h.lat,
+                lng = h.lon,
+                type = categoryToPoiType(h.category),
+                name = h.name,
+            )
+        }
+        lastSymbolIds = symbols.map { it.id }
+        if (symbols.isNotEmpty()) {
+            emitter.onNext(ShowSymbols(symbols))
         }
     }
 
-    private fun showHotspotsOnMap(hotspots: List<RouteHotspotsApi.Hotspot>) {
-        // TODO(F1): dispatch per hotspot (of in bulk) een map-effect dat een icoon op
-        //   (lat, lon) tekent in de RouteHotspots-kaartlaag. Iets als:
-        // hotspots.forEach { h ->
-        //     karooSystem.dispatch(ShowSymbol(id = h.id ?: "${h.lat},${h.lon}",
-        //         lat = h.lat, lng = h.lon, icon = iconFor(h.category), label = h.name))
-        // }
-        // Bevestig de effect-klasse (ShowSymbols/MapEffect) + icon-API tegen de docs.
-    }
-
-    private fun clearHotspots() {
+    private fun clearHotspots(emitter: Emitter<MapEffect>) {
+        if (lastSymbolIds.isNotEmpty()) {
+            emitter.onNext(HideSymbols(lastSymbolIds))
+        }
         lastRouteKey = null
-        // TODO(F1): dispatch het effect om de eigen kaartlaag/symbolen te wissen.
+        lastSymbolIds = emptyList()
     }
 
     override fun onDestroy() {
-        scope.cancel()
         karooSystem.disconnect()
         super.onDestroy()
+    }
+
+    companion object {
+        /** Backend-categorie (zie `POI_CATEGORIES` in routehotspots.py) → Karoo POI-icoontype. */
+        internal fun categoryToPoiType(category: String?): String = when (category) {
+            "coffee" -> Symbol.POI.Types.COFFEE
+            "lunch" -> Symbol.POI.Types.FOOD
+            "viewpoint" -> Symbol.POI.Types.VIEWPOINT
+            "monument" -> Symbol.POI.Types.MONUMENT
+            "water" -> Symbol.POI.Types.WATER
+            else -> Symbol.POI.Types.GENERIC
+        }
     }
 }
