@@ -103,7 +103,8 @@ class RouteHotspotsExtension : KarooExtension("routehotspots", "1") {
                 bufferMeters = 3000,
             )
         }.onFailure {
-            Log.e(TAG, "hotspotsAlongRoute faalde", it)
+            Log.e(TAG, "hotspotsAlongRoute faalde: ${it.javaClass.name}: ${it.message}")
+            Log.e(TAG, "hotspotsAlongRoute faalde (met stacktrace)", it)
         }.getOrElse {
             // Fail-soft: geen hotspots i.p.v. een crash tijdens het fietsen.
             emptyList()
