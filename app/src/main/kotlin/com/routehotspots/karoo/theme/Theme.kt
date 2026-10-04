@@ -1,4 +1,4 @@
-package io.hammerhead.karooexttemplate.theme
+package com.routehotspots.karoo.theme
 
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
