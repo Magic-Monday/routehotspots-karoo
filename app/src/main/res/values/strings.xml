@@ -2,4 +2,7 @@
     <string name="app_name">RouteHotspots</string>
     <string name="hello_karoo">Hello Karoo!</string>
     <string name="extension_name">RouteHotspots</string>
+    <string name="categories_title">Welke hotspots wil je zien?</string>
+    <string name="onboarding_hint">Activeer een route op je Karoo — de hotspots hieronder verschijnen dan automatisch op je kaart.</string>
+    <string name="feature_toggle_label">Hotspots tonen</string>
 </resources>

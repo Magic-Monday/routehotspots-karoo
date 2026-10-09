@@ -70,6 +70,12 @@ class RouteHotspotsExtension : KarooExtension("routehotspots", "1") {
         state: OnNavigationState.NavigationState,
         emitter: Emitter<MapEffect>,
     ) {
+        if (!FeaturePrefs.isEnabled(applicationContext)) {
+            Log.i(TAG, "hoofdschakelaar uit — geen hotspots injecteren")
+            clearHotspots(emitter)
+            return
+        }
+
         // Alleen een vooraf geladen/geactiveerde route (NavigatingRoute) telt als
         // "injectie-bron" — zie plan: géén ad-hoc "navigeer naar X" (NavigatingToDestination).
         val route = state as? OnNavigationState.NavigationState.NavigatingRoute
@@ -92,13 +98,22 @@ class RouteHotspotsExtension : KarooExtension("routehotspots", "1") {
             return
         }
 
+        val categories = CategoryPrefs.loadEnabled(applicationContext).toList()
+        if (categories.isEmpty()) {
+            // Alles uitgezet in de instellingen — geen zinvolle call te maken, en niet
+            // elke ~5s de backend lastigvallen met een gegarandeerde 400.
+            Log.i(TAG, "geen categorieën aan — hotspots wissen, niet queryen")
+            clearHotspots(emitter)
+            return
+        }
+
         // Backend verwacht [lon, lat]-paren; de polyline-decoder geeft [lat, lon].
         val lonLatCoords = routeCoords.map { listOf(it[1], it[0]) }
-        Log.i(TAG, "POST /api/poi/query — eerste coord=${lonLatCoords.first()} laatste=${lonLatCoords.last()}")
+        Log.i(TAG, "POST /api/poi/query — categorieën=$categories eerste coord=${lonLatCoords.first()} laatste=${lonLatCoords.last()}")
         val result = runCatching {
             RouteHotspotsApi.hotspotsAlongRoute(
                 routeCoords = lonLatCoords,
-                categories = RouteHotspotsApi.DEFAULT_CATEGORIES,
+                categories = categories,
                 bufferMeters = 3000,
             )
         }.onFailure {
@@ -163,7 +178,12 @@ class RouteHotspotsExtension : KarooExtension("routehotspots", "1") {
             "lunch" -> Symbol.POI.Types.FOOD
             "viewpoint" -> Symbol.POI.Types.VIEWPOINT
             "monument" -> Symbol.POI.Types.MONUMENT
-            "water" -> Symbol.POI.Types.WATER
+            "drinkwater" -> Symbol.POI.Types.WATER
+            "bicycle" -> Symbol.POI.Types.BIKE_SHOP
+            "camping" -> Symbol.POI.Types.CAMPING
+            "charging" -> Symbol.POI.Types.GAS_STATION
+            "toilet" -> Symbol.POI.Types.RESTROOM
+            "supermarket" -> Symbol.POI.Types.SHOPPING
             else -> Symbol.POI.Types.GENERIC
         }
     }
