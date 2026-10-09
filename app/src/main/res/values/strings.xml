@@ -10,4 +10,7 @@
     <string name="alert_server_title">Hotspots nu niet beschikbaar</string>
     <string name="alert_server_detail">De kaartserver is overbelast. We proberen het vanzelf opnieuw.</string>
     <string name="alert_loaded_title">%1$d hotspots op je kaart</string>
+    <string name="alert_loaded_cached_title">%1$d hotspots op je kaart (uit cache)</string>
+    <string name="detour_title">Maximaal omrijden</string>
+    <string name="detour_hint">Hotspots verder van je route dan dit blijven weg.</string>
 </resources>

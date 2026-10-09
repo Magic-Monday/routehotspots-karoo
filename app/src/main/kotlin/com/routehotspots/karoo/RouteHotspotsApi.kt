@@ -44,6 +44,9 @@ object RouteHotspotsApi {
         val categories: List<String>,
         val buffer_m: Int,
         val spread_m: Int,
+        // false = buffer_m is een harde grens ("maximaal X m omrijden"); de backend
+        // verbreedt dan niet naar 3/5/10/25 km als een categorie leeg blijft.
+        val expand: Boolean,
     )
 
     // De backend geeft POI's gegroepeerd per categorie terug. We houden het ruim
@@ -89,7 +92,7 @@ object RouteHotspotsApi {
     ): QueryResult {
         val payload = json.encodeToString(
             QueryBody.serializer(),
-            QueryBody(routeCoords, categories, bufferMeters, spreadMeters),
+            QueryBody(routeCoords, categories, bufferMeters, spreadMeters, expand = false),
         )
         val conn = (URL("$BASE/api/poi/query").openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"

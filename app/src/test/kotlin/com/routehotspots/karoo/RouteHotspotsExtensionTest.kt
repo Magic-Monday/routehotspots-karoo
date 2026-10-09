@@ -28,3 +28,15 @@ class RouteHotspotsExtensionTest {
         assertEquals(Symbol.POI.Types.GENERIC, RouteHotspotsExtension.categoryToPoiType(null))
     }
 }
+
+class HotspotCacheKeyTest {
+    @Test
+    fun `cache-sleutel verandert met route, categorieen en omrij-afstand`() {
+        val k1 = HotspotCache.key("abc", listOf("coffee", "lunch"), 500)
+        assertEquals(k1, HotspotCache.key("abc", listOf("lunch", "coffee"), 500)) // volgorde-onafhankelijk
+        org.junit.Assert.assertNotEquals(k1, HotspotCache.key("abd", listOf("coffee", "lunch"), 500))
+        org.junit.Assert.assertNotEquals(k1, HotspotCache.key("abc", listOf("coffee"), 500))
+        org.junit.Assert.assertNotEquals(k1, HotspotCache.key("abc", listOf("coffee", "lunch"), 1000))
+        assertEquals(40, k1.length)
+    }
+}

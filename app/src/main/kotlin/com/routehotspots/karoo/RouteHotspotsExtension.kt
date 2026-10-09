@@ -18,6 +18,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -56,6 +57,12 @@ class RouteHotspotsExtension : KarooExtension("routehotspots", "1") {
     // houdt de backend (en Overpass) tot een minuut bezig.
     private var retryNotBefore: Long = 0L
 
+    // Eigen retry-timer: de Karoo stuurt alléén een nieuw NavigatingRoute-event als er
+    // iets wijzigt, dus na "zet wifi aan" kun je niet op een event wachten — gezien
+    // 9 okt: wifi ging aan, maar er kwam geen event meer en dus ook geen nieuwe poging.
+    private var mapScope: CoroutineScope? = null
+    private var retryJob: Job? = null
+
     private enum class AlertKind { NO_NETWORK, SERVER }
 
     override fun onCreate() {
@@ -67,6 +74,7 @@ class RouteHotspotsExtension : KarooExtension("routehotspots", "1") {
     override fun startMap(emitter: Emitter<MapEffect>) {
         Log.i(TAG, "startMap aangeroepen — Karoo System heeft de kaartlaag gebonden")
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        mapScope = scope
         val job: Job = scope.launch {
             karooSystem.consumerFlow<OnNavigationState>()
                 .map { it.state }
@@ -78,6 +86,9 @@ class RouteHotspotsExtension : KarooExtension("routehotspots", "1") {
         }
         emitter.setCancellable {
             Log.i(TAG, "startMap gestopt (kaartlaag losgekoppeld)")
+            retryJob?.cancel()
+            retryJob = null
+            mapScope = null
             job.cancel()
             lastRouteKey = null
             lastSymbolIds = emptyList()
@@ -110,23 +121,36 @@ class RouteHotspotsExtension : KarooExtension("routehotspots", "1") {
             return
         }
 
-        val key = "${route.name}:${routeCoords.size}"
-        if (key == lastRouteKey) {
-            Log.i(TAG, "zelfde route als vorige keer ($key) — niet opnieuw queryen")
-            return
-        }
-
-        if (System.currentTimeMillis() < retryNotBefore) {
-            Log.i(TAG, "wachten tot volgende poging (${(retryNotBefore - System.currentTimeMillis()) / 1000}s)")
-            return
-        }
-
         val categories = CategoryPrefs.loadEnabled(applicationContext).toList()
+        val maxDetourM = DetourPrefs.maxDetourMeters(applicationContext)
+        // Sleutel = route + instellingen: wijzig je categorieën of omrij-afstand terwijl
+        // de route actief is, dan volgt bij het eerstvolgende event een verse set.
+        val key = HotspotCache.key(route.routePolyline, categories, maxDetourM)
+        if (key == lastRouteKey) {
+            Log.i(TAG, "zelfde route+instellingen als vorige keer — niet opnieuw queryen")
+            return
+        }
+
         if (categories.isEmpty()) {
             // Alles uitgezet in de instellingen — geen zinvolle call te maken, en niet
             // elke ~5s de backend lastigvallen met een gegarandeerde 400.
             Log.i(TAG, "geen categorieën aan — hotspots wissen, niet queryen")
             clearHotspots(emitter)
+            return
+        }
+
+        // Cache eerst: thuis (met wifi) één keer geactiveerd = onderweg geen netwerk nodig.
+        HotspotCache.load(applicationContext, key)?.let { cached ->
+            retryJob?.cancel(); retryJob = null
+            lastRouteKey = key
+            Log.i(TAG, "${cached.hotspots.size} hotspots uit cache (opgeslagen ${(System.currentTimeMillis() - cached.savedAt) / 60_000} min geleden)")
+            injectHotspots(cached.hotspots, emitter)
+            showLoaded(cached.hotspots.size, fromCache = true)
+            return
+        }
+
+        if (System.currentTimeMillis() < retryNotBefore) {
+            Log.i(TAG, "wachten tot volgende poging (${(retryNotBefore - System.currentTimeMillis()) / 1000}s)")
             return
         }
 
@@ -137,18 +161,18 @@ class RouteHotspotsExtension : KarooExtension("routehotspots", "1") {
         if (!hasNetwork()) {
             Log.i(TAG, "geen netwerk — melding tonen, call overslaan, volgende poging over ${RETRY_AFTER_FAILURE_MS / 1000}s")
             showAlertOnce(key, AlertKind.NO_NETWORK)
-            retryNotBefore = System.currentTimeMillis() + RETRY_AFTER_FAILURE_MS
+            scheduleRetry(state, emitter)
             return
         }
 
         // Backend verwacht [lon, lat]-paren; de polyline-decoder geeft [lat, lon].
         val lonLatCoords = routeCoords.map { listOf(it[1], it[0]) }
-        Log.i(TAG, "POST /api/poi/query — categorieën=$categories eerste coord=${lonLatCoords.first()} laatste=${lonLatCoords.last()}")
+        Log.i(TAG, "POST /api/poi/query — categorieën=$categories max-omrijden=${maxDetourM}m eerste coord=${lonLatCoords.first()} laatste=${lonLatCoords.last()}")
         val result = runCatching {
             RouteHotspotsApi.queryAlongRoute(
                 routeCoords = lonLatCoords,
                 categories = categories,
-                bufferMeters = 3000,
+                bufferMeters = maxDetourM,
             )
         }.onFailure {
             Log.e(TAG, "queryAlongRoute faalde: ${it.javaClass.name}: ${it.message}")
@@ -172,7 +196,7 @@ class RouteHotspotsExtension : KarooExtension("routehotspots", "1") {
         if (query == null) {
             val kind = if (hasNetwork()) AlertKind.SERVER else AlertKind.NO_NETWORK
             showAlertOnce(key, kind)
-            retryNotBefore = System.currentTimeMillis() + RETRY_AFTER_FAILURE_MS
+            scheduleRetry(state, emitter)
             Log.i(TAG, "geen retry-blokkade gezet — volgende poging voor deze route over ${RETRY_AFTER_FAILURE_MS / 1000}s")
             return
         }
@@ -183,27 +207,48 @@ class RouteHotspotsExtension : KarooExtension("routehotspots", "1") {
         // Dat laatste is geen resultaat maar een mislukking: niet onthouden, wel melden.
         if (query.isCompleteFailure(categories)) {
             showAlertOnce(key, AlertKind.SERVER)
-            retryNotBefore = System.currentTimeMillis() + RETRY_AFTER_FAILURE_MS
+            scheduleRetry(state, emitter)
             Log.i(TAG, "alle categorieën faalden op de backend — volgende poging over ${RETRY_AFTER_FAILURE_MS / 1000}s")
             return
         }
+        retryJob?.cancel()
+        retryJob = null
         val hotspots = query.hotspots
         lastRouteKey = key
         Log.i(TAG, "${hotspots.size} hotspots ontvangen")
+        HotspotCache.save(
+            applicationContext, key,
+            HotspotCache.Entry(route.name, categories, maxDetourM, System.currentTimeMillis(), hotspots),
+        )
 
         injectHotspots(hotspots, emitter)
-        if (hotspots.isNotEmpty()) {
-            karooSystem.dispatch(
-                InRideAlert(
-                    id = "routehotspots-loaded",
-                    icon = R.drawable.ic_launcher_foreground,
-                    title = getString(R.string.alert_loaded_title, hotspots.size),
-                    detail = null,
-                    autoDismissMs = 4_000,
-                    backgroundColor = R.color.rh_alert_info_bg,
-                    textColor = R.color.rh_alert_text,
-                ),
-            )
+        showLoaded(hotspots.size, fromCache = false)
+    }
+
+    private fun showLoaded(count: Int, fromCache: Boolean) {
+        if (count == 0) return
+        karooSystem.dispatch(
+            InRideAlert(
+                id = "routehotspots-loaded",
+                icon = R.drawable.ic_launcher_foreground,
+                title = getString(if (fromCache) R.string.alert_loaded_cached_title else R.string.alert_loaded_title, count),
+                detail = null,
+                autoDismissMs = 4_000,
+                backgroundColor = R.color.rh_alert_info_bg,
+                textColor = R.color.rh_alert_text,
+            ),
+        )
+    }
+
+    /** Plan over [RETRY_AFTER_FAILURE_MS] zelf een nieuwe poging voor [state], los van Karoo-events. */
+    private fun scheduleRetry(state: OnNavigationState.NavigationState, emitter: Emitter<MapEffect>) {
+        retryNotBefore = System.currentTimeMillis() + RETRY_AFTER_FAILURE_MS
+        retryJob?.cancel()
+        retryJob = mapScope?.launch {
+            delay(RETRY_AFTER_FAILURE_MS)
+            retryNotBefore = 0L
+            Log.i(TAG, "eigen retry-timer afgelopen — opnieuw proberen")
+            handleNavigationState(state, emitter)
         }
     }
 
@@ -266,6 +311,8 @@ class RouteHotspotsExtension : KarooExtension("routehotspots", "1") {
         lastSymbolIds = emptyList()
         alertedForRoute = null
         retryNotBefore = 0L
+        retryJob?.cancel()
+        retryJob = null
     }
 
     override fun onDestroy() {

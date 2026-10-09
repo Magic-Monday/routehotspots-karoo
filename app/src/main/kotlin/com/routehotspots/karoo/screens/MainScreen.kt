@@ -11,6 +11,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -27,6 +28,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.routehotspots.karoo.ALL_POI_CATEGORIES
 import com.routehotspots.karoo.CategoryPrefs
+import com.routehotspots.karoo.DetourPrefs
 import com.routehotspots.karoo.FeaturePrefs
 import com.routehotspots.karoo.R
 import com.routehotspots.karoo.theme.AppTheme
@@ -44,6 +46,7 @@ fun MainScreen(onBack: () -> Unit = {}) {
     val context = LocalContext.current
     var enabled by remember { mutableStateOf(CategoryPrefs.loadEnabled(context)) }
     var featureOn by remember { mutableStateOf(FeaturePrefs.isEnabled(context)) }
+    var maxDetour by remember { mutableStateOf(DetourPrefs.maxDetourMeters(context)) }
 
     Column(
         modifier = Modifier
@@ -78,19 +81,56 @@ fun MainScreen(onBack: () -> Unit = {}) {
             )
             Switch(checked = featureOn, onCheckedChange = null)
         }
-        Text(
-            text = stringResource(id = R.string.categories_title),
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.onBackground,
-            modifier = Modifier
-                .padding(horizontal = 16.dp, vertical = 8.dp)
-                .alpha(if (featureOn) 1f else 0.4f),
-        )
         LazyColumn(
             modifier = Modifier
                 .fillMaxWidth()
                 .alpha(if (featureOn) 1f else 0.4f),
         ) {
+            item(key = "detour-header") {
+                Text(
+                    text = stringResource(id = R.string.detour_title),
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 2.dp),
+                )
+                Text(
+                    text = stringResource(id = R.string.detour_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
+                )
+            }
+            items(DetourPrefs.OPTIONS, key = { "detour-${it.first}" }) { (meters, label) ->
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .toggleable(
+                            value = maxDetour == meters,
+                            enabled = featureOn,
+                            onValueChange = {
+                                maxDetour = meters
+                                DetourPrefs.setMaxDetourMeters(context, meters)
+                            },
+                        )
+                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                ) {
+                    RadioButton(selected = maxDetour == meters, onClick = null, enabled = featureOn)
+                    Text(
+                        text = label,
+                        color = MaterialTheme.colorScheme.onBackground,
+                        modifier = Modifier.padding(start = 12.dp),
+                    )
+                }
+            }
+            item(key = "categories-header") {
+                Text(
+                    text = stringResource(id = R.string.categories_title),
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 4.dp),
+                )
+            }
             items(ALL_POI_CATEGORIES, key = { it.key }) { category ->
                 val isOn = category.key in enabled
                 Row(

@@ -140,11 +140,23 @@ Derde fix, ná het eerste succesvolle resultaat:
 - **USB-debugging stond uit** (Karoo meldde zich alleen als USB-schijf, `ioreg` toonde
   enkel een mass-storage-interface). Instellingen → Ontwikkelaarsopties → USB-foutopsporing.
 
+## Karoo-pakket zonder extensie — GPX-import via de Hammerhead-app (9 okt 2026)
+Live bevestigd: een GPX met de route als `<trk>` en hotspots als `<wpt>`, gedeeld naar de
+**Hammerhead iOS-app** (Routes → ADD / "Open in Hammerhead"), verschijnt met POI-iconen op
+de route en synct naar de Karoo — **géén extensie, géén wifi onderweg**. Voorwaarde:
+`<type>` én `<sym>` moeten exact een van Hammerheads negen vaste waarden zijn (Food,
+Water, Parking, Camping, Lodging, Geocache, Summit, Generic, Danger); eigen labels
+("Koffie") worden stilletjes weggegooid. De backend levert dit nu via
+`POST /api/gpx/build` met `target:"karoo"` (integration_dashboard,
+`feat/routehotspots-omrij-afstand`). Dit is de basis voor het "Karoo-pakket": thuis of
+op de telefoon hotspots kiezen/wegstrepen, route (evt. verlegd langs hotspots) als GPX
+delen, fietsen. De extensie blijft de live-overlay voor routes die je niet vooraf verrijkt.
+
 ## Nog open
-- **Wifi-tijdens-de-rit is bevestigd de verkeerde aanname** (zie 9 okt). De melding is
-  de pleister; de echte oplossing is "vooraf ophalen zodra er wifi is, lokaal cachen":
-  hotspots ophalen zodra een route wordt gekozen (vóór de rit start, als wifi nog aan
-  staat) of bij het synchroniseren thuis, en per route-id cachen.
+- **Cache (gebouwd 9 okt) live testen:** route thuis activeren met wifi → deactiveren →
+  wifi uit → opnieuw activeren → verwacht "N hotspots op je kaart (uit cache)".
+- **Omrij-instelling vereist backend-deploy** (`expand:false`, 50 routepunten); tot die
+  tijd verbreedt PROD stilletjes naar 3 km als een categorie leeg is.
 - **POI-limiet van de kaartlaag** — onbekend of 218 symbolen tegelijk ook daadwerkelijk een
   praktisch/prestatie-probleem is, los van de visuele clutter.
 - **`NavigatingRoute` vs. `NavigatingToDestination`** — de extensie injecteert alleen op een
