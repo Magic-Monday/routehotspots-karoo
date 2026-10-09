@@ -52,7 +52,21 @@ object RouteHotspotsApi {
     private data class QueryResponse(
         val pois_by_category: Map<String, List<Hotspot>>? = null,
         val pois: List<Hotspot>? = null,
+        // Per categorie de Overpass-fout (bv. "http 504: …") als die categorie niets
+        // opleverde. De backend antwoordt dan tóch HTTP 200 — zonder dit veld zie je
+        // "0 hotspots" en weet je niet of de route leeg is of de server overbelast.
+        val errors_by_category: Map<String, String>? = null,
     )
+
+    /** Antwoord van [queryAlongRoute]: de hotspots plus eventuele fouten per categorie. */
+    data class QueryResult(
+        val hotspots: List<Hotspot>,
+        val errorsByCategory: Map<String, String>,
+    ) {
+        /** Alle gevraagde categorieën faalden en er kwam niets terug → geen echt resultaat. */
+        fun isCompleteFailure(requested: List<String>): Boolean =
+            hotspots.isEmpty() && requested.isNotEmpty() && requested.all { it in errorsByCategory }
+    }
 
     /**
      * Haal hotspots op langs [routeCoords] (lijst van [lon, lat]-paren, bv. uit de
@@ -64,7 +78,15 @@ object RouteHotspotsApi {
         categories: List<String>,
         bufferMeters: Int = 3000,
         spreadMeters: Int = 1000,
-    ): List<Hotspot> {
+    ): List<Hotspot> = queryAlongRoute(routeCoords, categories, bufferMeters, spreadMeters).hotspots
+
+    /** Als [hotspotsAlongRoute], maar mét de fouten per categorie uit het antwoord. */
+    fun queryAlongRoute(
+        routeCoords: List<List<Double>>,
+        categories: List<String>,
+        bufferMeters: Int = 3000,
+        spreadMeters: Int = 1000,
+    ): QueryResult {
         val payload = json.encodeToString(
             QueryBody.serializer(),
             QueryBody(routeCoords, categories, bufferMeters, spreadMeters),
@@ -92,7 +114,10 @@ object RouteHotspotsApi {
                 parsed.pois_by_category?.values?.forEach { addAll(it) }
                 parsed.pois?.let { addAll(it) }
             }
-            return flat.distinctBy { it.id ?: "%.5f,%.5f".format(it.lat, it.lon) }
+            return QueryResult(
+                hotspots = flat.distinctBy { it.id ?: "%.5f,%.5f".format(it.lat, it.lon) },
+                errorsByCategory = parsed.errors_by_category.orEmpty(),
+            )
         } finally {
             conn.disconnect()
         }

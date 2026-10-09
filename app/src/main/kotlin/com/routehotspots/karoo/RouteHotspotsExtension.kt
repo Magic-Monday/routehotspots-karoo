@@ -1,10 +1,14 @@
 package com.routehotspots.karoo
 
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.util.Log
 import io.hammerhead.karooext.KarooSystemService
 import io.hammerhead.karooext.extension.KarooExtension
 import io.hammerhead.karooext.internal.Emitter
 import io.hammerhead.karooext.models.HideSymbols
+import io.hammerhead.karooext.models.InRideAlert
 import io.hammerhead.karooext.models.MapEffect
 import io.hammerhead.karooext.models.OnNavigationState
 import io.hammerhead.karooext.models.ShowSymbols
@@ -13,6 +17,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -39,6 +45,18 @@ class RouteHotspotsExtension : KarooExtension("routehotspots", "1") {
     // elke identieke tick opnieuw queryen, en de vorige markers kunnen wissen.
     private var lastRouteKey: String? = null
     private var lastSymbolIds: List<String> = emptyList()
+
+    // Per route maximaal één keer dezelfde waarschuwing tonen — de Karoo emit elke ~5 s
+    // een vers NavigatingRoute-event, en zonder deze grendel zou de rijder elke 5 s
+    // dezelfde "zet wifi aan"-melding krijgen.
+    private var alertedForRoute: Pair<String, AlertKind>? = null
+
+    // Na een mislukte poging (geen netwerk, timeout, Overpass 504) minstens zo lang
+    // wachten vóór de volgende: de Karoo emit elke ~5 s een route-event en elke poging
+    // houdt de backend (en Overpass) tot een minuut bezig.
+    private var retryNotBefore: Long = 0L
+
+    private enum class AlertKind { NO_NETWORK, SERVER }
 
     override fun onCreate() {
         super.onCreate()
@@ -98,6 +116,11 @@ class RouteHotspotsExtension : KarooExtension("routehotspots", "1") {
             return
         }
 
+        if (System.currentTimeMillis() < retryNotBefore) {
+            Log.i(TAG, "wachten tot volgende poging (${(retryNotBefore - System.currentTimeMillis()) / 1000}s)")
+            return
+        }
+
         val categories = CategoryPrefs.loadEnabled(applicationContext).toList()
         if (categories.isEmpty()) {
             // Alles uitgezet in de instellingen — geen zinvolle call te maken, en niet
@@ -107,33 +130,112 @@ class RouteHotspotsExtension : KarooExtension("routehotspots", "1") {
             return
         }
 
+        // De Karoo-firmware zet wifi zelf UIT zodra een rit/route actief wordt
+        // (HxStateManagerService: "handleUpdateWifi - disabling for ACTIVE state",
+        // gezien in logcat 9 okt 2026). Zonder netwerk heeft de call geen zin:
+        // meld het één keer en laat de retry-lus doorlopen tot de rijder wifi aanzet.
+        if (!hasNetwork()) {
+            Log.i(TAG, "geen netwerk — melding tonen, call overslaan, volgende poging over ${RETRY_AFTER_FAILURE_MS / 1000}s")
+            showAlertOnce(key, AlertKind.NO_NETWORK)
+            retryNotBefore = System.currentTimeMillis() + RETRY_AFTER_FAILURE_MS
+            return
+        }
+
         // Backend verwacht [lon, lat]-paren; de polyline-decoder geeft [lat, lon].
         val lonLatCoords = routeCoords.map { listOf(it[1], it[0]) }
         Log.i(TAG, "POST /api/poi/query — categorieën=$categories eerste coord=${lonLatCoords.first()} laatste=${lonLatCoords.last()}")
         val result = runCatching {
-            RouteHotspotsApi.hotspotsAlongRoute(
+            RouteHotspotsApi.queryAlongRoute(
                 routeCoords = lonLatCoords,
                 categories = categories,
                 bufferMeters = 3000,
             )
         }.onFailure {
-            Log.e(TAG, "hotspotsAlongRoute faalde: ${it.javaClass.name}: ${it.message}")
-            Log.e(TAG, "hotspotsAlongRoute faalde (met stacktrace)", it)
+            Log.e(TAG, "queryAlongRoute faalde: ${it.javaClass.name}: ${it.message}")
+            Log.e(TAG, "queryAlongRoute faalde (met stacktrace)", it)
+        }
+
+        // De HTTP-call blokkeert en is niet te onderbreken: als de kaartlaag intussen is
+        // losgekoppeld (scope gecancelled), is dit antwoord verlaten — niets meer tekenen
+        // of melden. Gezien 9 okt: een verlaat 504-antwoord toonde "niet beschikbaar"
+        // terwijl de nieuwe binding al 26 hotspots op de kaart had.
+        if (!currentCoroutineContext().isActive) {
+            Log.i(TAG, "antwoord genegeerd — kaartlaag is intussen losgekoppeld")
+            return
         }
 
         // Alleen bij een geslaagde call (ongeacht of er hotspots in zaten) onthouden we
         // de route als "afgehandeld" — bij een mislukte poging (wifi-hapering, timeout)
         // blijft lastRouteKey ongewijzigd, zodat een volgende state-wisseling voor
         // DEZELFDE route alsnog een nieuwe poging waagt i.p.v. stil overgeslagen te worden.
-        val hotspots = result.getOrNull()
-        if (hotspots == null) {
-            Log.i(TAG, "geen retry-blokkade gezet — volgende poging voor deze route mag opnieuw")
+        val query = result.getOrNull()
+        if (query == null) {
+            val kind = if (hasNetwork()) AlertKind.SERVER else AlertKind.NO_NETWORK
+            showAlertOnce(key, kind)
+            retryNotBefore = System.currentTimeMillis() + RETRY_AFTER_FAILURE_MS
+            Log.i(TAG, "geen retry-blokkade gezet — volgende poging voor deze route over ${RETRY_AFTER_FAILURE_MS / 1000}s")
             return
         }
+        if (query.errorsByCategory.isNotEmpty()) {
+            Log.w(TAG, "backend meldde fouten per categorie: ${query.errorsByCategory}")
+        }
+        // HTTP 200 met nul hotspots óf nul omdat élke categorie faalde (Overpass 504 e.d.)?
+        // Dat laatste is geen resultaat maar een mislukking: niet onthouden, wel melden.
+        if (query.isCompleteFailure(categories)) {
+            showAlertOnce(key, AlertKind.SERVER)
+            retryNotBefore = System.currentTimeMillis() + RETRY_AFTER_FAILURE_MS
+            Log.i(TAG, "alle categorieën faalden op de backend — volgende poging over ${RETRY_AFTER_FAILURE_MS / 1000}s")
+            return
+        }
+        val hotspots = query.hotspots
         lastRouteKey = key
         Log.i(TAG, "${hotspots.size} hotspots ontvangen")
 
         injectHotspots(hotspots, emitter)
+        if (hotspots.isNotEmpty()) {
+            karooSystem.dispatch(
+                InRideAlert(
+                    id = "routehotspots-loaded",
+                    icon = R.drawable.ic_launcher_foreground,
+                    title = getString(R.string.alert_loaded_title, hotspots.size),
+                    detail = null,
+                    autoDismissMs = 4_000,
+                    backgroundColor = R.color.rh_alert_info_bg,
+                    textColor = R.color.rh_alert_text,
+                ),
+            )
+        }
+    }
+
+    /** Is er een netwerk met internet-capability actief (wifi; de Karoo heeft geen mobiel)? */
+    private fun hasNetwork(): Boolean {
+        val cm = applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return true // onbekend → niet blokkeren, de call zelf geeft dan uitsluitsel
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
+
+    /** Toon [kind] hooguit één keer per route; wordt gereset bij route-wissel ([clearHotspots]). */
+    private fun showAlertOnce(routeKey: String, kind: AlertKind) {
+        if (alertedForRoute == routeKey to kind) return
+        alertedForRoute = routeKey to kind
+        val (title, detail) = when (kind) {
+            AlertKind.NO_NETWORK -> getString(R.string.alert_no_network_title) to getString(R.string.alert_no_network_detail)
+            AlertKind.SERVER -> getString(R.string.alert_server_title) to getString(R.string.alert_server_detail)
+        }
+        Log.i(TAG, "InRideAlert $kind: $title")
+        val ok = karooSystem.dispatch(
+            InRideAlert(
+                id = "routehotspots-${kind.name.lowercase()}",
+                icon = R.drawable.ic_launcher_foreground,
+                title = title,
+                detail = detail,
+                autoDismissMs = 10_000,
+                backgroundColor = R.color.rh_alert_warn_bg,
+                textColor = R.color.rh_alert_text,
+            ),
+        )
+        if (!ok) Log.w(TAG, "InRideAlert dispatch geweigerd (Karoo System niet verbonden?)")
     }
 
     private fun injectHotspots(hotspots: List<RouteHotspotsApi.Hotspot>, emitter: Emitter<MapEffect>) {
@@ -162,6 +264,8 @@ class RouteHotspotsExtension : KarooExtension("routehotspots", "1") {
         }
         lastRouteKey = null
         lastSymbolIds = emptyList()
+        alertedForRoute = null
+        retryNotBefore = 0L
     }
 
     override fun onDestroy() {
@@ -171,6 +275,7 @@ class RouteHotspotsExtension : KarooExtension("routehotspots", "1") {
 
     companion object {
         private const val TAG = "RouteHotspots"
+        private const val RETRY_AFTER_FAILURE_MS = 30_000L
 
         /** Backend-categorie (zie `POI_CATEGORIES` in routehotspots.py) → Karoo POI-icoontype. */
         internal fun categoryToPoiType(category: String?): String = when (category) {

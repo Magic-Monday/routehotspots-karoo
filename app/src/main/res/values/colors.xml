@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- InRideAlert-kleuren (karoo-ext verwacht @ColorRes, geen ARGB-int) -->
+    <color name="rh_alert_warn_bg">#E65100</color>
+    <color name="rh_alert_info_bg">#1565C0</color>
+    <color name="rh_alert_text">#FFFFFF</color>
+</resources>

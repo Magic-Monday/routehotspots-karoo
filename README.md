@@ -112,19 +112,39 @@ Derde fix, ná het eerste succesvolle resultaat:
   zonder dat de route zelf wijzigt), waardoor de extensie na deze fix vanzelf om de ~5
   seconden opnieuw probeert tot het lukt — relevant voor een echte rit met wisselende dekking.
 
+## Live-test — bevindingen (9 okt 2026, Karoo k24, F2 + meldingen)
+- **Route opende niet (klapte terug naar de routelijst).** Niet onze bug: Hammerheads
+  eigen `io.hammerhead.routesapp` crashte vijf keer op
+  `SQLiteDatabaseCorruptException` in `/sdcard/offline/personal_heatmap.mbtiles`
+  (persoonlijke-heatmap-kaartlaag). Integriteitscheck op een kopie bevestigde het.
+  Opgelost door het bestand te hernoemen naar `*.corrupt-20261009`; de Karoo bouwt
+  de heatmap zelf opnieuw. Herkennen: `adb logcat -d '*:E' | grep -A3 FATAL`.
+- **De Karoo zet wifi zélf uit zodra een rit/route actief wordt.** Logcat:
+  `HxStateManagerService: handleUpdateWifi - disabling for ACTIVE state` /
+  `re-enabling for INACTIVE state`. Dus "live ophalen tijdens de rit" werkt alleen
+  als de rijder wifi handmatig aanzet via het control center (dat blijft dan aan).
+  Daarom toont de extensie nu een `InRideAlert` "Zet wifi aan voor hotspots" (één
+  keer per route, `ACCESS_NETWORK_STATE`-check vóór de call) en blijft hij stil
+  retryen tot er netwerk is.
+- **"0 hotspots ontvangen" was een backend-/Overpass-probleem.** overpass-api.de gaf
+  HTTP 504 op de 75 km-route; de backend zette dat in `errors_by_category` en
+  antwoordde tóch 200 met nul POI's. De extensie leest dat veld nu: falen álle
+  gevraagde categorieën, dan geldt het als mislukt (melding "Hotspots nu niet
+  beschikbaar", geen retry-blokkade). Backend-fix (bbox in de Overpass-query +
+  failover over mirrors) staat in integration_dashboard op
+  `feat/routehotspots-overpass-bbox-failover`.
+- **`spread_m=1000` live bevestigd:** 26 hotspots (lunch+koffie) i.p.v. 218.
+- **Verlaat antwoord na herbinden van de kaartlaag:** de blokkerende HTTP-call is niet
+  te onderbreken; een antwoord van een al-losgekoppelde `startMap`-scope toonde een
+  verkeerde melding. Nu: na de call `currentCoroutineContext().isActive` checken.
+- **USB-debugging stond uit** (Karoo meldde zich alleen als USB-schijf, `ioreg` toonde
+  enkel een mass-storage-interface). Instellingen → Ontwikkelaarsopties → USB-foutopsporing.
+
 ## Nog open
-- **`spread_m=1000` niet live herbevestigd** — de wifi van de Karoo werd tijdens het
-  hertesten onstabiel op **twee verschillende netwerken** (eerst het eigen wifi-netwerk,
-  daarna een telefoon-hotspot — beide met sterk signaal, beide met tussentijds afgebroken
-  verbindingen: `UnknownHostException` resp. `SocketException: Socket closed` midden in de
-  download). Dat wijst eerder op de wifi-radio van de Karoo zelf dan op een netwerkprobleem.
-  Eerstvolgende gelegenheid: route activeren en in `app/data/...` of via logcat checken of
-  het aantal hotspots nu rond de tientallen zit i.p.v. 218.
-- **Fietscomputer-aanname**: een Karoo gaat er mogelijk vanuit dat er tijdens het fietsen
-  geen wifi is (radio bewust zuinig/instabiel gehouden) — zie de risico-sectie van
-  `docs/PLAN-routehotspots-karoo-extension.md`. Als dat klopt, is "live ophalen tijdens de rit" misschien de verkeerde
-  aanname en moet het "vooraf ophalen zodra er wifi is, lokaal cachen" worden (thuis
-  synchroniseren, net als kaarten/firmware nu al werkt).
+- **Wifi-tijdens-de-rit is bevestigd de verkeerde aanname** (zie 9 okt). De melding is
+  de pleister; de echte oplossing is "vooraf ophalen zodra er wifi is, lokaal cachen":
+  hotspots ophalen zodra een route wordt gekozen (vóór de rit start, als wifi nog aan
+  staat) of bij het synchroniseren thuis, en per route-id cachen.
 - **POI-limiet van de kaartlaag** — onbekend of 218 symbolen tegelijk ook daadwerkelijk een
   praktisch/prestatie-probleem is, los van de visuele clutter.
 - **`NavigatingRoute` vs. `NavigatingToDestination`** — de extensie injecteert alleen op een

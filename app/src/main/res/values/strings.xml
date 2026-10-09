@@ -5,4 +5,9 @@
     <string name="categories_title">Welke hotspots wil je zien?</string>
     <string name="onboarding_hint">Activeer een route op je Karoo — de hotspots hieronder verschijnen dan automatisch op je kaart.</string>
     <string name="feature_toggle_label">Hotspots tonen</string>
+    <string name="alert_no_network_title">Zet wifi aan voor hotspots</string>
+    <string name="alert_no_network_detail">RouteHotspots heeft internet nodig om hotspots langs je route op te halen. De Karoo zet wifi tijdens een rit zelf uit.</string>
+    <string name="alert_server_title">Hotspots nu niet beschikbaar</string>
+    <string name="alert_server_detail">De kaartserver is overbelast. We proberen het vanzelf opnieuw.</string>
+    <string name="alert_loaded_title">%1$d hotspots op je kaart</string>
 </resources>
