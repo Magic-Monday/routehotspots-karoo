@@ -1,0 +1,23 @@
+<resources>
+    <string name="categories_title">Welke hotspots wil je zien?</string>
+    <string name="onboarding_hint">Activeer een route op je Karoo — de hotspots hieronder verschijnen dan automatisch op je kaart.</string>
+    <string name="feature_toggle_label">Hotspots tonen</string>
+    <string name="alert_no_network_title">Zet wifi aan voor hotspots</string>
+    <string name="alert_no_network_detail">RouteHotspots heeft internet nodig om hotspots langs je route op te halen. De Karoo zet wifi tijdens een rit zelf uit.</string>
+    <string name="alert_server_title">Hotspots nu niet beschikbaar</string>
+    <string name="alert_server_detail">De kaartserver is overbelast. We proberen het vanzelf opnieuw.</string>
+    <string name="alert_loaded_title">%1$d hotspots op je kaart</string>
+    <string name="alert_loaded_cached_title">%1$d hotspots op je kaart (uit cache)</string>
+    <string name="detour_title">Maximaal omrijden</string>
+    <string name="detour_hint">Hotspots verder van je route dan dit blijven weg.</string>
+    <string name="cat_coffee">Koffie</string>
+    <string name="cat_lunch">Lunch</string>
+    <string name="cat_viewpoint">Uitzicht</string>
+    <string name="cat_monument">Monument</string>
+    <string name="cat_drinkwater">Drinkwater</string>
+    <string name="cat_bicycle">Fietsenmaker</string>
+    <string name="cat_camping">Camping</string>
+    <string name="cat_charging">Oplaadpunt</string>
+    <string name="cat_toilet">Toilet</string>
+    <string name="cat_supermarket">Supermarkt</string>
+</resources>

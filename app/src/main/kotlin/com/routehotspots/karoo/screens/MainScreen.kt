@@ -150,7 +150,7 @@ fun MainScreen(onBack: () -> Unit = {}) {
                 ) {
                     Text(text = category.emoji, modifier = Modifier.padding(end = 12.dp))
                     Text(
-                        text = category.label,
+                        text = stringResource(id = category.labelRes),
                         color = MaterialTheme.colorScheme.onBackground,
                         modifier = Modifier.weight(1f),
                     )
